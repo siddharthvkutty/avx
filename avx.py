@@ -85,6 +85,7 @@ class Player(Adw.ApplicationWindow):
         self.gl = _gl_loader()
         self.seeking = False  # guards the scale while we move it programmatically
         self.hide_id = 0
+        self.last_ptr = None
         self.repeat = 0
         self.shuffled = False
         self.playlist_key = None
@@ -190,7 +191,7 @@ class Player(Adw.ApplicationWindow):
         wheel.connect("scroll", lambda _c, _dx, dy: self.nudge_volume(-0.05 * dy) or True)
         self.area.add_controller(wheel)
         motion = Gtk.EventControllerMotion()
-        motion.connect("motion", lambda *_: self.reveal())
+        motion.connect("motion", self.on_motion)
         ov.add_controller(motion)
         keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)  # before focused buttons
         keys.connect("key-pressed", self.on_key)
@@ -201,7 +202,7 @@ class Player(Adw.ApplicationWindow):
 
         # no window buttons in fullscreen; Escape/F leave it
         self.connect("notify::fullscreened", lambda *_: self.header.set_show_end_title_buttons(not self.is_fullscreen()))
-        GLib.timeout_add(250, self.tick)
+        self.tick_id = GLib.timeout_add(250, self.tick)
         self.connect("close-request", self.on_close)
         self.reveal()
 
@@ -471,6 +472,15 @@ class Player(Adw.ApplicationWindow):
     def toggle_fullscreen(self):
         self.unfullscreen() if self.is_fullscreen() else self.fullscreen()
 
+    def on_motion(self, _c, x, y):
+        # GTK re-sends "motion" at the same spot whenever the UI under a still pointer changes
+        # (our 4x/second seek-bar and clock updates do that), which would keep the controls up forever.
+        # Only real movement counts.
+        if self.last_ptr and abs(x - self.last_ptr[0]) + abs(y - self.last_ptr[1]) < 3:
+            return
+        self.last_ptr = (x, y)
+        self.reveal()
+
     def reveal(self):
         self.top.set_visible(True)
         self.dock.set_visible(True)
@@ -543,12 +553,18 @@ class Player(Adw.ApplicationWindow):
             self.plist_btn.set_active(not self.plist_btn.get_active())
         elif name == "q":
             self.close()
+            return True  # mpv is gone now, so skip the reveal() below
         else:
             return False
         self.reveal()
         return True
 
     def on_close(self, *_):
+        # stop our timers first: they poll mpv, which is about to be shut down
+        for src in (self.tick_id, self.hide_id):
+            if src:
+                GLib.source_remove(src)
+        self.tick_id = self.hide_id = 0
         if self.ctx:
             self.area.make_current()
             self.ctx.free()
