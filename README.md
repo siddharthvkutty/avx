@@ -60,3 +60,7 @@ Handy keys: `Space` plays and pauses, the arrow keys skip and change the volume,
 ## Credits
 
 Playback is powered by [mpv](https://mpv.io).
+
+## License
+
+[MIT](LICENSE)
