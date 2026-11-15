@@ -11,6 +11,8 @@ import mpv
 
 HIDE_AFTER_MS = 3000
 SEEK_STEP = 5
+RESTART_AFTER = 3  # seconds into a track after which Previous restarts it instead of going back
+FADE_MS = 450       # keep in step with the CSS transition below
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_ID = "io.github.avx"
 SUB_EXT = {".srt", ".ass", ".ssa", ".vtt", ".sub"}
@@ -36,6 +38,8 @@ progressbar.hairline trough { min-height: 2px; background: alpha(white, .15); bo
 progressbar.hairline progress { min-height: 2px; background: #b878ff; border-radius: 0; }
 .scrim { background: linear-gradient(alpha(black, .7), transparent); }
 .scrim headerbar { background: none; box-shadow: none; color: #eceef2; }
+.fade { transition: opacity 120ms ease-out; }
+.fade.gone { opacity: 0; transition: opacity 450ms ease-in-out; }
 .stage { background: black; }
 .hint-title { font-size: 24pt; font-weight: 700; color: #eceef2; }
 .hint-sub { font-size: 12pt; color: alpha(#eceef2, .6); }
@@ -85,6 +89,7 @@ class Player(Adw.ApplicationWindow):
         self.gl = _gl_loader()
         self.seeking = False  # guards the scale while we move it programmatically
         self.hide_id = 0
+        self.settle_id = 0
         self.last_ptr = None
         self.repeat = 0
         self.shuffled = False
@@ -117,7 +122,7 @@ class Player(Adw.ApplicationWindow):
                                           css_classes=["flat"], focus_on_click=False)
         self.plist_btn.connect("toggled", lambda b: self.panel.set_reveal_child(b.get_active()))
         header.pack_end(self.plist_btn)
-        self.top = Gtk.Box(css_classes=["scrim"], valign=Gtk.Align.START)
+        self.top = Gtk.Box(css_classes=["scrim", "fade"], valign=Gtk.Align.START)
         self.top.append(header)
         header.set_hexpand(True)
 
@@ -136,8 +141,10 @@ class Player(Adw.ApplicationWindow):
         self.vol = Gtk.VolumeButton(value=1.0, focus_on_click=False)
         self.vol.connect("value-changed", lambda b, v: setattr(self.mpv, "volume", v * 100))
         left = Gtk.Box(spacing=2)
-        for w in (icon_button("media-skip-backward-symbolic", "Previous (<)", lambda: self.step(-1)),
+        for w in (icon_button("media-skip-backward-symbolic", "Previous: restart, then previous track (<)", self.previous),
+                  icon_button("media-seek-backward-symbolic", f"Back {SEEK_STEP}s (Left)", lambda: self.seek_by(-SEEK_STEP)),
                   self.play_btn,
+                  icon_button("media-seek-forward-symbolic", f"Forward {SEEK_STEP}s (Right)", lambda: self.seek_by(SEEK_STEP)),
                   icon_button("media-skip-forward-symbolic", "Next (>)", lambda: self.step(1)),
                   self.vol):
             left.append(w)
@@ -158,10 +165,10 @@ class Player(Adw.ApplicationWindow):
         dock = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, css_classes=["dock"])
         dock.append(row1)
         dock.append(row2)
-        self.dock = Adw.Clamp(child=dock, maximum_size=900, valign=Gtk.Align.END,
+        self.dock = Adw.Clamp(child=dock, maximum_size=900, valign=Gtk.Align.END, css_classes=["fade"],
                               margin_start=16, margin_end=16, margin_bottom=16)
-        self.hairline = Gtk.ProgressBar(css_classes=["hairline"], valign=Gtk.Align.END, can_target=False,
-                                        visible=False)
+        self.hairline = Gtk.ProgressBar(css_classes=["hairline", "fade", "gone"], valign=Gtk.Align.END,
+                                        can_target=False)
 
         # --- playlist panel
         self.plist = Gtk.ListBox(css_classes=["navigation-sidebar"])
@@ -268,11 +275,32 @@ class Player(Adw.ApplicationWindow):
             return False
 
     def toggle_pause(self):
-        if not self.mpv.idle_active:
-            self.mpv.pause = not self.mpv.pause
+        m = self.mpv
+        if m.idle_active:
+            return
+        if m.eof_reached:  # keep-open parks us on the last frame when the final track ends: play it again
+            self.cmd("seek", 0, "absolute")
+            m.pause = False
+        else:
+            m.pause = not m.pause
+
+    def seek_by(self, seconds):
+        # "+exact": by default mpv snaps relative seeks to the nearest keyframe, which can be many seconds away
+        self.cmd("seek", seconds, "relative+exact")
 
     def step(self, n):
         self.cmd("playlist-next" if n > 0 else "playlist-prev")
+
+    def previous(self):
+        """Like most players: a few seconds in, Previous restarts the track; click again to go back one."""
+        m = self.mpv
+        if m.idle_active:
+            return
+        first = (m.playlist_pos or 0) <= 0 and self.repeat != 2  # nothing before it unless the playlist loops
+        if first or (m.time_pos or 0) > RESTART_AFTER:
+            self.cmd("seek", 0, "absolute")
+        else:
+            self.cmd("playlist-prev")
 
     def cycle_repeat(self):
         self.repeat = (self.repeat + 1) % 3
@@ -482,9 +510,13 @@ class Player(Adw.ApplicationWindow):
         self.reveal()
 
     def reveal(self):
-        self.top.set_visible(True)
-        self.dock.set_visible(True)
-        self.hairline.set_visible(False)
+        for w in (self.top, self.dock):
+            w.remove_css_class("gone")  # fades in (CSS transition)
+            w.set_can_target(True)
+        self.hairline.add_css_class("gone")
+        if self.settle_id:
+            GLib.source_remove(self.settle_id)
+            self.settle_id = 0
         # lift subtitles clear of the dock (mpv measures this margin against a 720px-high window)
         self.mpv.sub_margin_y = int(((self.dock.get_height() or 90) + 32) * 720 / max(self.area.get_height(), 1))
         self.set_cursor(None)
@@ -496,11 +528,17 @@ class Player(Adw.ApplicationWindow):
         self.hide_id = 0
         busy = any(b.get_active() for b in self.menu_btns) or self.vol.get_popup().get_visible()
         if not (self.mpv.pause or self.mpv.idle_active or busy):
-            self.top.set_visible(False)
-            self.dock.set_visible(False)
-            self.mpv.sub_margin_y = 22
-            self.hairline.set_visible(True)  # the one thing left on screen: where you are in the file
+            for w in (self.top, self.dock):
+                w.add_css_class("gone")  # fades out; faded controls must not eat clicks meant for the video
+                w.set_can_target(False)
+            self.hairline.remove_css_class("gone")  # the one thing left on screen: where you are in the file
             self.set_cursor(Gdk.Cursor.new_from_name("none"))
+            self.settle_id = GLib.timeout_add(FADE_MS, self.settle)
+        return False
+
+    def settle(self):
+        self.settle_id = 0
+        self.mpv.sub_margin_y = 22  # subtitles drop back down once the dock has finished fading
         return False
 
     def on_key(self, _c, keyval, _code, state):
@@ -514,9 +552,9 @@ class Player(Adw.ApplicationWindow):
         elif name == "space":
             self.toggle_pause()
         elif name == "Left":
-            m.seek(-SEEK_STEP, "relative")
+            self.seek_by(-SEEK_STEP)
         elif name == "Right":
-            m.seek(SEEK_STEP, "relative")
+            self.seek_by(SEEK_STEP)
         elif name == "Up":
             self.nudge_volume(0.05)
         elif name == "Down":
@@ -531,7 +569,7 @@ class Player(Adw.ApplicationWindow):
         elif name == "greater":
             self.step(1)
         elif name == "less":
-            self.step(-1)
+            self.previous()
         elif name == "Page_Down":
             self.cmd("add", "chapter", 1)
         elif name == "Page_Up":
@@ -561,10 +599,10 @@ class Player(Adw.ApplicationWindow):
 
     def on_close(self, *_):
         # stop our timers first: they poll mpv, which is about to be shut down
-        for src in (self.tick_id, self.hide_id):
+        for src in (self.tick_id, self.hide_id, self.settle_id):
             if src:
                 GLib.source_remove(src)
-        self.tick_id = self.hide_id = 0
+        self.tick_id = self.hide_id = self.settle_id = 0
         if self.ctx:
             self.area.make_current()
             self.ctx.free()
