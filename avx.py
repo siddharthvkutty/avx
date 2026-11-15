@@ -11,6 +11,8 @@ import mpv
 
 HIDE_AFTER_MS = 3000
 SEEK_STEP = 5
+HERE = os.path.dirname(os.path.abspath(__file__))
+APP_ID = "io.github.avx"
 SUB_EXT = {".srt", ".ass", ".ssa", ".vtt", ".sub"}
 SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2]
 REPEAT = [  # (icon, tooltip): off -> this file -> whole playlist
@@ -23,15 +25,15 @@ CSS = """
 .dock { background: alpha(#1c1e24, .88); border-radius: 22px; padding: 10px 16px 8px 16px;
         box-shadow: 0 10px 40px alpha(black, .55); color: #eceef2; }
 .dock button, .dock menubutton > button { color: #eceef2; }
-.dock button.on { color: #7fd1ff; }
+.dock button.on { color: #b878ff; }
 .dock .time { color: alpha(#eceef2, .7); }
 scale.seek trough { min-height: 4px; border-radius: 2px; background: alpha(white, .2); }
-scale.seek highlight { background: #7fd1ff; border-radius: 2px; }
+scale.seek highlight { background: #b878ff; border-radius: 2px; }
 scale.seek slider { min-width: 12px; min-height: 12px; margin: -5px; background: white;
                     border-radius: 6px; box-shadow: none; opacity: 0; transition: opacity 150ms; }
 scale.seek:hover slider { opacity: 1; }
 progressbar.hairline trough { min-height: 2px; background: alpha(white, .15); border-radius: 0; }
-progressbar.hairline progress { min-height: 2px; background: #7fd1ff; border-radius: 0; }
+progressbar.hairline progress { min-height: 2px; background: #b878ff; border-radius: 0; }
 .scrim { background: linear-gradient(alpha(black, .7), transparent); }
 .scrim headerbar { background: none; box-shadow: none; color: #eceef2; }
 .stage { background: black; }
@@ -71,6 +73,9 @@ class Player(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, default_width=1000, default_height=620, title="avX")
         locale.setlocale(locale.LC_NUMERIC, "C")  # libmpv refuses to start otherwise
+        # dev runs from the source tree; an installed copy finds the icon through the normal theme path
+        Gtk.IconTheme.get_for_display(Gdk.Display.get_default()).add_search_path(os.path.join(HERE, "data", "icons"))
+        Gtk.Window.set_default_icon_name(APP_ID)
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(), self._css(), Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         self.mpv = mpv.MPV(vo="libmpv", input_default_bindings=False, input_vo_keyboard=False,
@@ -94,20 +99,18 @@ class Player(Adw.ApplicationWindow):
         self.hint_title = Gtk.Label(css_classes=["hint-title"], wrap=True, justify=Gtk.Justification.CENTER)
         self.hint_sub = Gtk.Label(css_classes=["hint-sub"], wrap=True, justify=Gtk.Justification.CENTER)
         # opaque and full-size: with no video mpv stops drawing, so the last frame would show through
-        self.hint = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, can_target=False,
-                            valign=Gtk.Align.FILL, css_classes=["stage"])
-        for w in (self.hint_title, self.hint_sub):
-            w.set_margin_start(24)
-            w.set_margin_end(24)
-        self.hint_title.set_vexpand(True)
-        self.hint_title.set_valign(Gtk.Align.END)
-        self.hint_sub.set_vexpand(True)
-        self.hint_sub.set_valign(Gtk.Align.START)
-        self.hint.append(self.hint_title)
-        self.hint.append(self.hint_sub)
+        self.logo = Gtk.Image(icon_name=APP_ID, pixel_size=160, margin_bottom=12)
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, halign=Gtk.Align.CENTER,
+                        valign=Gtk.Align.CENTER, margin_start=24, margin_end=24)
+        for w in (self.logo, self.hint_title, self.hint_sub):
+            inner.append(w)
+        self.hint = Gtk.Box(can_target=False, css_classes=["stage"])
+        self.hint.append(inner)
+        inner.set_hexpand(True)
 
         # --- top bar (gradient scrim + flat header)
-        header = Adw.HeaderBar(css_classes=["flat"])
+        self.header = header = Adw.HeaderBar(css_classes=["flat"])
+        header.set_decoration_layout(":minimize,maximize,close")  # same look on every desktop, no title-bar icon
         header.pack_start(icon_button("document-open-symbolic", "Open (Ctrl+O)", self.open_dialog))
         self.plist_btn = Gtk.ToggleButton(icon_name="view-list-symbolic", tooltip_text="Playlist (P)",
                                           css_classes=["flat"], focus_on_click=False)
@@ -161,7 +164,7 @@ class Player(Adw.ApplicationWindow):
 
         # --- playlist panel
         self.plist = Gtk.ListBox(css_classes=["navigation-sidebar"])
-        self.plist.connect("row-activated", lambda _l, r: self.mpv.command("playlist-play-index", r.get_index()))
+        self.plist.connect("row-activated", lambda _l, r: self.cmd("playlist-play-index", r.get_index()))
         head = Gtk.Box(spacing=6)
         head.append(Gtk.Label(label="Playlist", xalign=0, hexpand=True, css_classes=["heading"]))
         head.append(icon_button("list-add-symbolic", "Add files to playlist", lambda: self.open_dialog(append=True)))
@@ -196,6 +199,8 @@ class Player(Adw.ApplicationWindow):
         drop.connect("drop", lambda _t, files, *_: self.load([f.get_path() for f in files.get_files()]) or True)
         self.add_controller(drop)
 
+        # no window buttons in fullscreen; Escape/F leave it
+        self.connect("notify::fullscreened", lambda *_: self.header.set_show_end_title_buttons(not self.is_fullscreen()))
         GLib.timeout_add(250, self.tick)
         self.connect("close-request", self.on_close)
         self.reveal()
@@ -249,15 +254,24 @@ class Player(Adw.ApplicationWindow):
         if self.mpv.idle_active:
             self.toast("Open a video before adding subtitles")
             return
-        self.mpv.command("sub-add", path, "select")
-        self.toast(f"Loaded {os.path.basename(path)}")
+        self.toast(f"Loaded {os.path.basename(path)}" if self.cmd("sub-add", path, "select")
+                   else "Couldn't load that subtitle file")
+
+    def cmd(self, *args):
+        """Run an mpv command; mpv refuses some on the wrong media (frame-step on audio, chapters on a
+        file with none). That's not an error worth a traceback."""
+        try:
+            self.mpv.command(*args)
+            return True
+        except SystemError:
+            return False
 
     def toggle_pause(self):
         if not self.mpv.idle_active:
             self.mpv.pause = not self.mpv.pause
 
     def step(self, n):
-        self.mpv.command("playlist-next" if n > 0 else "playlist-prev")
+        self.cmd("playlist-next" if n > 0 else "playlist-prev")
 
     def cycle_repeat(self):
         self.repeat = (self.repeat + 1) % 3
@@ -271,7 +285,7 @@ class Player(Adw.ApplicationWindow):
 
     def toggle_shuffle(self):
         self.shuffled = not self.shuffled
-        self.mpv.command("playlist-shuffle" if self.shuffled else "playlist-unshuffle")
+        self.cmd("playlist-shuffle" if self.shuffled else "playlist-unshuffle")
         self.set_on(self.shuffle_btn, self.shuffled)
         self.toast("Shuffle on" if self.shuffled else "Shuffle off")
 
@@ -280,8 +294,8 @@ class Player(Adw.ApplicationWindow):
             return
         d = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_PICTURES) or os.path.expanduser("~")
         path = os.path.join(d, time.strftime("avx-%Y%m%d-%H%M%S.png"))
-        self.mpv.command("screenshot-to-file", path)
-        self.toast(f"Saved {os.path.basename(path)}")
+        self.toast(f"Saved {os.path.basename(path)}" if self.cmd("screenshot-to-file", path)
+                   else "Nothing to capture")
 
     def nudge_volume(self, d):
         self.vol.set_value(max(0, min(1.3, self.vol.get_value() + d)))
@@ -413,11 +427,13 @@ class Player(Adw.ApplicationWindow):
         title = m.media_title
         self.set_title(f"{title} - avX" if title and not idle else "avX")
         if idle:
+            self.logo.set_visible(True)
             self.hint_title.set_text("Nothing playing")
             self.hint_sub.set_text("Drop files here or press Ctrl+O")
             self.hint.set_visible(True)
         elif m.video_format is None:  # audio only: no picture, so show who's playing
             md = {k.lower(): v for k, v in (m.metadata or {}).items()}
+            self.logo.set_visible(False)
             self.hint_title.set_text(title or "")
             self.hint_sub.set_text(" - ".join(x for x in (md.get("artist"), md.get("album")) if x))
             self.hint.set_visible(True)
@@ -453,12 +469,14 @@ class Player(Adw.ApplicationWindow):
             self.toggle_pause()
 
     def toggle_fullscreen(self):
-        self.set_fullscreened(not self.is_fullscreen())
+        self.unfullscreen() if self.is_fullscreen() else self.fullscreen()
 
     def reveal(self):
         self.top.set_visible(True)
         self.dock.set_visible(True)
         self.hairline.set_visible(False)
+        # lift subtitles clear of the dock (mpv measures this margin against a 720px-high window)
+        self.mpv.sub_margin_y = int(((self.dock.get_height() or 90) + 32) * 720 / max(self.area.get_height(), 1))
         self.set_cursor(None)
         if self.hide_id:
             GLib.source_remove(self.hide_id)
@@ -470,6 +488,7 @@ class Player(Adw.ApplicationWindow):
         if not (self.mpv.pause or self.mpv.idle_active or busy):
             self.top.set_visible(False)
             self.dock.set_visible(False)
+            self.mpv.sub_margin_y = 22
             self.hairline.set_visible(True)  # the one thing left on screen: where you are in the file
             self.set_cursor(Gdk.Cursor.new_from_name("none"))
         return False
@@ -498,19 +517,19 @@ class Player(Adw.ApplicationWindow):
         elif name in ("f", "F11"):
             self.toggle_fullscreen()
         elif name == "Escape" and self.is_fullscreen():
-            self.set_fullscreened(False)
+            self.unfullscreen()
         elif name == "greater":
             self.step(1)
         elif name == "less":
             self.step(-1)
         elif name == "Page_Down":
-            m.command("add", "chapter", 1)
+            self.cmd("add", "chapter", 1)
         elif name == "Page_Up":
-            m.command("add", "chapter", -1)
+            self.cmd("add", "chapter", -1)
         elif name == "period":
-            m.command("frame-step")
+            self.cmd("frame-step")
         elif name == "comma":
-            m.command("frame-back-step")
+            self.cmd("frame-back-step")
         elif name in ("bracketright", "bracketleft"):
             m.speed = max(0.25, min(4, round((m.speed or 1) + (0.25 if name == "bracketright" else -0.25), 2)))
         elif name == "s":

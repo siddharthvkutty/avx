@@ -1,36 +1,62 @@
-# avX
+<p align="center">
+  <img src="assets/logo.png" alt="avX" width="130">
+</p>
 
-Audio/video player for Linux. GTK4 + libadwaita UI, libmpv does the playback.
+<h1 align="center">avX</h1>
 
-## Run
+<p align="center">A clean, simple audio and video player for Linux.<br>Open a file and it plays.</p>
 
-    sudo pacman -S mpv gtk4 libadwaita python-gobject   # mpv ships libmpv
-    python -m venv --system-site-packages .venv && .venv/bin/pip install mpv
-    .venv/bin/python avx.py [files...]
+<p align="center">
+  <img src="docs/main.png" alt="avX playing a video, with the controls along the bottom" width="860">
+</p>
 
-Open with Ctrl+O, the button, drag-and-drop, or file arguments (extra files queue up).
-Drop a subtitle file (.srt .ass .ssa .vtt .sub) on the window to load it. Subtitles next to the video with a similar name load automatically. Playback resumes where you left off.
+## Install
 
-## Controls
+Linux only for now. The installer takes care of everything it needs and adds avX to your app menu.
 
-The dock at the bottom has seek, previous/next, volume, subtitles (tracks, load file, delay), audio track, speed, shuffle, repeat (off / file / playlist), screenshot (saved to Pictures) and fullscreen. The list button top right opens the playlist. Controls hide after 3 seconds and leave a thin progress line.
+Download `install.sh` from the [latest release](https://github.com/siddharthvkutty/avx/releases/latest), make it executable, and run it:
 
-## Keys
+```sh
+curl -fsSL -o install.sh https://github.com/siddharthvkutty/avx/releases/latest/download/install.sh
+chmod +x install.sh
+./install.sh
+```
 
-| Key | Action |
-|---|---|
-| Space, click | play/pause |
-| Left / Right | seek 5s |
-| Up / Down, mouse wheel | volume |
-| M | mute |
-| F, F11, double-click | fullscreen |
-| `<` `>` | previous / next |
-| Page Up / Page Down | previous / next chapter |
-| `,` `.` | step one frame back / forward |
-| `[` `]` | slower / faster |
-| V | subtitles on/off |
-| R | cycle repeat |
-| P | playlist |
-| S | screenshot |
-| Ctrl+O | open |
-| Q | quit |
+The `chmod +x` step is required. Downloaded files aren't executable until you give them permission.
+
+It will offer to make avX your default player for videos and music. Then open it from your app menu, or just double-click any video.
+
+To update or uninstall, run `./install.sh` again and pick an option.
+
+## Use
+
+Drop a file on the window, or press `Ctrl+O`. Move the mouse to bring the controls up, and they tuck themselves away while you watch. Only a thin line stays at the bottom to show how far along you are.
+
+Open a few files at once and they line up in a playlist.
+
+<p align="center">
+  <img src="docs/playlist.png" alt="The playlist panel open beside a video" width="860">
+</p>
+
+Music works too. You get the track and artist, and the same controls.
+
+<p align="center">
+  <img src="docs/audio.png" alt="avX playing a song" width="860">
+</p>
+
+## Features
+
+- Plays almost any video or audio file
+- Subtitles: load your own, pick a track, or nudge the timing
+- Switch between audio tracks
+- Playlist with repeat and shuffle
+- Slow down or speed up playback
+- Remembers where you stopped
+- Screenshots of any frame, saved to your Pictures folder
+- Fullscreen with a double-click
+
+Handy keys: `Space` plays and pauses, the arrow keys skip and change the volume, `F` goes fullscreen.
+
+## Credits
+
+Playback is powered by [mpv](https://mpv.io).
